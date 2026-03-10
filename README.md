@@ -23,39 +23,40 @@ and [our comparison paper](https://www.ncbi.nlm.nih.gov/pubmed/30566647).
 
 ## Installation
 
-### Using uv (recommended)
+### Using uvx (recommended — no clone needed)
 
 ```bash
-# Clone and install
-git clone https://github.com/CenterForMedicalGeneticsGhent/WisecondorX.git
+# Basic (sklearn KNN fallback)
+uvx --from 'wisecondorx @ git+https://github.com/fcliquet/WisecondorX' wisecondorx --help
+
+# With faiss ANN backend (recommended)
+uvx --from 'wisecondorx[fast] @ git+https://github.com/fcliquet/WisecondorX' wisecondorx --help
+
+# With hnswlib ANN backend
+uvx --from 'wisecondorx[ann] @ git+https://github.com/fcliquet/WisecondorX' wisecondorx --help
+
+# With both ANN backends
+uvx --from 'wisecondorx[fast,ann] @ git+https://github.com/fcliquet/WisecondorX' wisecondorx --help
+```
+
+### Using uv (local development)
+
+```bash
+git clone https://github.com/fcliquet/WisecondorX.git
 cd WisecondorX
-uv sync
-
-# With fast ANN backend (recommended)
-uv sync --extra fast
-
-# With alternative ANN backend
-uv sync --extra ann
-
-# With both
-uv sync --extra fast --extra ann
+uv sync --extra fast   # or: uv sync --extra ann, uv sync --extra fast --extra ann
+uv run wisecondorx --help
 ```
 
 ### Using pip
 
 ```bash
-pip install -U git+https://github.com/CenterForMedicalGeneticsGhent/WisecondorX
+pip install -U git+https://github.com/fcliquet/WisecondorX
 
 # Optional: install faiss for best performance
 pip install faiss-cpu
 # Or hnswlib as alternative
 pip install hnswlib
-```
-
-### Using Conda
-
-```bash
-conda install -f -c conda-forge -c bioconda wisecondorx
 ```
 
 ## Quick Start
@@ -197,4 +198,6 @@ Licensed under [CC BY-NC-SA](LICENSE.md).
 
 ## Authors
 
-Matthias De Smet, Lennart Raman — Center for Medical Genetics Ghent
+**Original authors:** Matthias De Smet, Lennart Raman — [Center for Medical Genetics Ghent](https://github.com/CenterForMedicalGeneticsGhent/WisecondorX)
+
+**v2.0.0 performance overhaul:** Florent Cliquet
