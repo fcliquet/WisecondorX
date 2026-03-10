@@ -200,4 +200,4 @@ Licensed under [CC BY-NC-SA](LICENSE.md).
 
 **Original authors:** Matthias De Smet, Lennart Raman — [Center for Medical Genetics Ghent](https://github.com/CenterForMedicalGeneticsGhent/WisecondorX)
 
-**v2.0.0 performance overhaul:** Florent Cliquet
+**v2.0.0 performance overhaul:** Freddy Cliquet
