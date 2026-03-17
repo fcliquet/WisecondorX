@@ -24,6 +24,7 @@ from wisecondorx.predict_tools import (
     exec_cbs,
     apply_blacklist,
     predict_gender,
+    resegment_aberrations,
 )
 
 
@@ -269,7 +270,7 @@ def tool_test(args):
             args, results[result], ref_sizes, rem_input
         )
 
-    log_trans(results, m_lr)
+    log_trans(results, m_lr, fix_zero_bins=getattr(args, "fix_zero_bins", False))
 
     if args.blacklist:
         logging.info("Applying blacklist ...")
@@ -278,6 +279,16 @@ def tool_test(args):
     logging.info("Executing circular binary segmentation ...")
 
     results["results_c"] = exec_cbs(rem_input, results)
+
+    if getattr(args, "resegment", False):
+        logging.info("Re-segmenting aberrant regions for nested events ...")
+        nested = resegment_aberrations(
+            rem_input, results, min_bins=args.resegment_min_bins
+        )
+        if nested:
+            logging.info("Found {} nested event(s)".format(len(nested)))
+            results["results_c"].extend(nested)
+            results["results_c"].sort(key=lambda s: (s[0], s[1]))
 
     if args.bed:
         logging.info("Writing tables ...")
@@ -495,6 +506,25 @@ def main():
         "--add-plot-title",
         action="store_true",
         help="Add the output name as plot title",
+    )
+    parser_test.add_argument(
+        "--fix-zero-bins",
+        action="store_true",
+        help="Replace zero-coverage bins with floor value (-20.0 log2) instead of masking. "
+        "Enables detection of homozygous deletions in germline samples.",
+    )
+    parser_test.add_argument(
+        "--resegment",
+        action="store_true",
+        help="Re-run CBS on aberrant segments to detect nested events (e.g. focal "
+        "deletion inside a mosaic arm-level gain).",
+    )
+    parser_test.add_argument(
+        "--resegment-min-bins",
+        type=int,
+        default=3,
+        dest="resegment_min_bins",
+        help="Minimum number of bins for a nested sub-segment to be reported.",
     )
     parser_test.add_argument(
         "--seed", type=int, default=None, help="Seed for segmentation algorithm"
