@@ -47,8 +47,9 @@ information are set to 0.
 
 
 def get_post_processed_result(args, result, ref_sizes, rem_input):
+    ref_sizes = ref_sizes[: len(result)]
     infinite_mask = ref_sizes < args.minrefbins
-    result[infinite_mask] = 0
+    result[infinite_mask[: len(result)]] = 0
     inflated_results = inflate_results(result, rem_input)
 
     final_results = []
