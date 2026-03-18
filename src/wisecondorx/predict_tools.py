@@ -1,5 +1,6 @@
 # WisecondorX
 
+import logging
 import os
 
 import numpy as np
@@ -177,7 +178,7 @@ and results_w are set to 0 (blacklist)).
 """
 
 
-def log_trans(results, log_r_median):
+def log_trans(results, log_r_median, fix_zero_bins=False):
     for chr in range(len(results["results_r"])):
         results["results_r"][chr] = np.log2(results["results_r"][chr])
 
@@ -186,9 +187,13 @@ def log_trans(results, log_r_median):
     for c in range(len(results["results_r"])):
         for i, rR in enumerate(results["results_r"][c]):
             if not np.isfinite(rR):
-                results["results_r"][c][i] = 0
-                results["results_z"][c][i] = 0
-                results["results_w"][c][i] = 0
+                if fix_zero_bins and results["results_w"][c][i] != 0:
+                    results["results_r"][c][i] = -20.0
+                    results["results_z"][c][i] = -100.0
+                else:
+                    results["results_r"][c][i] = 0
+                    results["results_z"][c][i] = 0
+                    results["results_w"][c][i] = 0
             if results["results_r"][c][i] != 0:
                 results["results_r"][c][i] = results["results_r"][c][i] - log_r_median
 
@@ -273,3 +278,109 @@ def _get_processed_cbs(cbs_data):
         results_c.append([chr, s, e, r])
 
     return results_c
+
+
+def _get_aberration_cutoff(beta, ploidy):
+    loss_cutoff = np.log2((ploidy - (beta / 2)) / ploidy)
+    gain_cutoff = np.log2((ploidy + (beta / 2)) / ploidy)
+    return loss_cutoff, gain_cutoff
+
+
+def _get_aberrant_segments(rem_input, results):
+    aberrant = []
+    for segment in results["results_c"]:
+        chr_name = str(segment[0] + 1)
+        ploidy = 2
+        if (chr_name == "23" or chr_name == "24") and rem_input["ref_gender"] == "M":
+            ploidy = 1
+        if rem_input["args"].beta is not None:
+            loss_c, gain_c = _get_aberration_cutoff(rem_input["args"].beta, ploidy)
+            if float(segment[4]) > gain_c or float(segment[4]) < loss_c:
+                aberrant.append(segment)
+        elif not isinstance(segment[3], str):
+            if abs(float(segment[3])) > rem_input["args"].zscore:
+                aberrant.append(segment)
+    return aberrant
+
+
+def _run_cbs_on_segment(rem_input, residuals, weights):
+    json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_reseg_tmp")
+    # CBS.R expects results_r to have 23 (female) or 24 (male) chromosome lists.
+    # We put our segment data in "chr 1" and pad the rest with single-zero lists.
+    # Using [0] instead of [] avoids R's 1:0 == c(1,0) bug; the zeros become NA
+    # in CBS.R (line 41) and all-NA chromosomes are skipped (lines 56-62).
+    n_chrs = 23  # use "F" gender for simplicity
+    padded_r = [list(residuals)] + [[0] for _ in range(n_chrs - 1)]
+    padded_w = [[float(w) for w in weights]] + [[0] for _ in range(n_chrs - 1)]
+    json_dict = {
+        "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
+        "ref_gender": "F",
+        "alpha": str(rem_input["args"].alpha),
+        "binsize": str(rem_input["binsize"]),
+        "seed": str(rem_input["args"].seed),
+        "results_r": padded_r,
+        "results_w": padded_w,
+        "infile": str("{}_01.json".format(json_cbs_dir)),
+        "outfile": str("{}_02.json".format(json_cbs_dir)),
+    }
+    cbs_out = exec_R(json_dict)
+    sub_segs = []
+    if cbs_out:
+        for seg in cbs_out:
+            # Only take segments from chr 1 (our actual data)
+            if int(seg["chr"]) == 1:
+                sub_segs.append((int(seg["s"]), int(seg["e"]), seg["r"]))
+    return sub_segs
+
+
+def resegment_aberrations(rem_input, results, min_bins=3):
+    aberrant_segments = _get_aberrant_segments(rem_input, results)
+    nested = []
+
+    for seg in aberrant_segments:
+        chrom, start, end, seg_z, seg_ratio = seg
+        seg_len = end - start + 1
+
+        if seg_len < min_bins * 2:
+            continue
+
+        bin_ratios = results["results_r"][chrom][start : end + 1]
+        bin_weights = results["results_w"][chrom][start : end + 1]
+
+        valid_count = sum(1 for r in bin_ratios if r != 0)
+        if valid_count < min_bins * 2:
+            continue
+
+        residuals = [r - seg_ratio if r != 0 else 0 for r in bin_ratios]
+
+        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights)
+
+        for sub_s, sub_e, sub_ratio in sub_segments:
+            sub_len = sub_e - sub_s + 1
+            if sub_len < min_bins:
+                continue
+            if sub_len > seg_len * 0.9:
+                continue
+
+            abs_ratio = seg_ratio + sub_ratio
+
+            if rem_input["args"].beta is not None:
+                if abs(sub_ratio) < rem_input["args"].beta / 4:
+                    continue
+            else:
+                if abs(sub_ratio) < 0.1:
+                    continue
+
+            abs_start = start + sub_s
+            abs_end = start + sub_e
+
+            bin_z = results["results_z"][chrom][abs_start : abs_end + 1]
+            valid_z = [z for z in bin_z if z != 0]
+            if valid_z:
+                sub_z = float(np.mean(valid_z))
+            else:
+                sub_z = "nan"
+
+            nested.append([chrom, abs_start, abs_end, sub_z, abs_ratio, "nested"])
+
+    return nested

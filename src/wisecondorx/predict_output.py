@@ -136,8 +136,8 @@ def _generate_regions_bed(rem_input, results):
 def _generate_segments_and_aberrations_bed(rem_input, results):
     segments_file = open("{}_segments.bed".format(rem_input["args"].outid), "w")
     aberrations_file = open("{}_aberrations.bed".format(rem_input["args"].outid), "w")
-    segments_file.write("chr\tstart\tend\tratio\tzscore\n")
-    aberrations_file.write("chr\tstart\tend\tratio\tzscore\ttype\n")
+    segments_file.write("chr\tstart\tend\tratio\tzscore\tsource\n")
+    aberrations_file.write("chr\tstart\tend\tratio\tzscore\ttype\tsource\n")
 
     for segment in results["results_c"]:
         chr_name = str(segment[0] + 1)
@@ -145,12 +145,14 @@ def _generate_segments_and_aberrations_bed(rem_input, results):
             chr_name = "X"
         if chr_name == "24":
             chr_name = "Y"
+        source = segment[5] if len(segment) > 5 else "primary"
         row = [
             chr_name,
             int(segment[1] * rem_input["binsize"] + 1),
             int(segment[2] * rem_input["binsize"]),
             segment[4],
             segment[3],
+            source,
         ]
         segments_file.write("{}\n".format("\t".join([str(x) for x in row])))
 
