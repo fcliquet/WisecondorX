@@ -305,14 +305,21 @@ def _get_aberrant_segments(rem_input, results):
 
 def _run_cbs_on_segment(rem_input, residuals, weights):
     json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_reseg_tmp")
+    # CBS.R expects results_r to have 23 (female) or 24 (male) chromosome lists.
+    # We put our segment data in "chr 1" and pad the rest with single-zero lists.
+    # Using [0] instead of [] avoids R's 1:0 == c(1,0) bug; the zeros become NA
+    # in CBS.R (line 41) and all-NA chromosomes are skipped (lines 56-62).
+    n_chrs = 23  # use "F" gender for simplicity
+    padded_r = [list(residuals)] + [[0] for _ in range(n_chrs - 1)]
+    padded_w = [[float(w) for w in weights]] + [[0] for _ in range(n_chrs - 1)]
     json_dict = {
         "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
         "ref_gender": "F",
         "alpha": str(rem_input["args"].alpha),
         "binsize": str(rem_input["binsize"]),
         "seed": str(rem_input["args"].seed),
-        "results_r": [list(residuals)],
-        "results_w": [[float(w) for w in weights]],
+        "results_r": padded_r,
+        "results_w": padded_w,
         "infile": str("{}_01.json".format(json_cbs_dir)),
         "outfile": str("{}_02.json".format(json_cbs_dir)),
     }
@@ -320,7 +327,9 @@ def _run_cbs_on_segment(rem_input, residuals, weights):
     sub_segs = []
     if cbs_out:
         for seg in cbs_out:
-            sub_segs.append((int(seg["s"]), int(seg["e"]), seg["r"]))
+            # Only take segments from chr 1 (our actual data)
+            if int(seg["chr"]) == 1:
+                sub_segs.append((int(seg["s"]), int(seg["e"]), seg["r"]))
     return sub_segs
 
 
