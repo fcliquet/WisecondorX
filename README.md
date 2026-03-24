@@ -11,6 +11,19 @@ For background on the algorithm, see
 [Huijsdens-van Amsterdam et al (2018)](https://www.nature.com/articles/gim201832.epdf),
 and [our comparison paper](https://www.ncbi.nlm.nih.gov/pubmed/30566647).
 
+## What's new in v2.1
+
+- **Fix autosomal/gender mask mismatch** — critical bugfix where autosomal normalization
+  results were misaligned for male samples when the autosomal and gender-specific masks
+  differed (e.g. 236-bin offset at 1kb bins), silently corrupting CNV signals
+- **`--resegment-all`** — re-runs CBS on ALL segments (not just aberrant ones) to detect
+  CNVs buried in large neutral segments (e.g. a 30kb deletion inside a 35 Mb segment)
+- **`--gap-size`** — configurable CBS gap splitting threshold (default 2 Mb for backward
+  compatibility)
+- **`--resegment-alpha`** — override CBS alpha for the resegmentation pass
+- **`--fix-zero-bins`** — interpolate zero-coverage bins for germline CNV detection
+- **Docker image** published to Docker Hub on every release
+
 ## What's new in v2.0.0
 
 - **Approximate Nearest Neighbor search** via faiss-cpu (with hnswlib and sklearn fallbacks)
@@ -22,6 +35,22 @@ and [our comparison paper](https://www.ncbi.nlm.nih.gov/pubmed/30566647).
 - Reference building at 5kb binsize (~550k bins) now completes in minutes instead of hours
 
 ## Installation
+
+### Using Docker
+
+```bash
+docker pull fcliquet/wisecondorx
+
+# Convert
+docker run --rm -v /data:/data fcliquet/wisecondorx convert /data/input.bam /data/output.npz
+
+# Build reference
+docker run --rm -v /data:/data fcliquet/wisecondorx newref /data/refs/*.npz /data/reference.npz --cpus 8
+
+# Predict
+docker run --rm -v /data:/data fcliquet/wisecondorx predict \
+  /data/test.npz /data/reference.npz /data/output_id --bed --resegment-all --fix-zero-bins
+```
 
 ### Using uvx (recommended — no clone needed)
 
@@ -134,6 +163,12 @@ wisecondorx predict test.npz reference.npz output_id [--optional arguments]
 | `--gender x` | Force analysis as male (M) or female (F) |
 | `--regions x` | Mark custom regions on plots (headerless .bed) |
 | `--ylim [a,b]` | Y-axis limits for plotting |
+| `--fix-zero-bins` | Replace zero-coverage bins with floor value for germline CNV detection |
+| `--resegment` | Re-run CBS on aberrant segments to detect nested events |
+| `--resegment-all` | Re-run CBS on ALL segments to detect embedded events in neutral regions |
+| `--resegment-min-bins x` | Minimum bins for a nested sub-segment (default: 3) |
+| `--resegment-alpha x` | CBS alpha for resegmentation pass (defaults to `--alpha`) |
+| `--gap-size x` | Split CBS segments at NaN gaps larger than x bp (default: 2000000) |
 | `--cairo` | Use cairo bitmap type for plots |
 | `--seed x` | Random seed for CBS |
 
@@ -200,4 +235,4 @@ Licensed under [CC BY-NC-SA](LICENSE.md).
 
 **Original authors:** Matthias De Smet, Lennart Raman — [Center for Medical Genetics Ghent](https://github.com/CenterForMedicalGeneticsGhent/WisecondorX)
 
-**v2.0.0 performance overhaul:** Freddy Cliquet
+**v2.0–2.1 performance overhaul and germline CNV detection:** Freddy Cliquet
