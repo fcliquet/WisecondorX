@@ -247,12 +247,14 @@ Calculates segmental zz-scores.
 def exec_cbs(rem_input, results):
     json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_CBS_tmp")
 
+    gap_size = getattr(rem_input["args"], "gap_size", 2000000)
     json_dict = {
         "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
         "ref_gender": str(rem_input["ref_gender"]),
         "alpha": str(rem_input["args"].alpha),
         "binsize": str(rem_input["binsize"]),
         "seed": str(rem_input["args"].seed),
+        "gap_size": str(gap_size),
         "results_r": results["results_r"],
         "results_w": results["results_w"],
         "infile": str("{}_01.json".format(json_cbs_dir)),
@@ -303,7 +305,7 @@ def _get_aberrant_segments(rem_input, results):
     return aberrant
 
 
-def _run_cbs_on_segment(rem_input, residuals, weights):
+def _run_cbs_on_segment(rem_input, residuals, weights, alpha_override=None):
     json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_reseg_tmp")
     # CBS.R expects results_r to have 23 (female) or 24 (male) chromosome lists.
     # We put our segment data in "chr 1" and pad the rest with single-zero lists.
@@ -312,12 +314,15 @@ def _run_cbs_on_segment(rem_input, residuals, weights):
     n_chrs = 23  # use "F" gender for simplicity
     padded_r = [list(residuals)] + [[0] for _ in range(n_chrs - 1)]
     padded_w = [[float(w) for w in weights]] + [[0] for _ in range(n_chrs - 1)]
+    gap_size = getattr(rem_input["args"], "gap_size", 2000000)
+    alpha = alpha_override if alpha_override is not None else rem_input["args"].alpha
     json_dict = {
         "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
         "ref_gender": "F",
-        "alpha": str(rem_input["args"].alpha),
+        "alpha": str(alpha),
         "binsize": str(rem_input["binsize"]),
         "seed": str(rem_input["args"].seed),
+        "gap_size": str(gap_size),
         "results_r": padded_r,
         "results_w": padded_w,
         "infile": str("{}_01.json".format(json_cbs_dir)),
@@ -336,6 +341,7 @@ def _run_cbs_on_segment(rem_input, residuals, weights):
 def resegment_aberrations(rem_input, results, min_bins=3):
     aberrant_segments = _get_aberrant_segments(rem_input, results)
     nested = []
+    reseg_alpha = getattr(rem_input["args"], "resegment_alpha", None)
 
     for seg in aberrant_segments:
         chrom, start, end, seg_z, seg_ratio = seg
@@ -353,7 +359,7 @@ def resegment_aberrations(rem_input, results, min_bins=3):
 
         residuals = [r - seg_ratio if r != 0 else 0 for r in bin_ratios]
 
-        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights)
+        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights, alpha_override=reseg_alpha)
 
         for sub_s, sub_e, sub_ratio in sub_segments:
             sub_len = sub_e - sub_s + 1

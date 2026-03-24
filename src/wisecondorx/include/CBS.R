@@ -25,6 +25,10 @@ seed <- as.numeric(input$seed)
 gender <- input$ref_gender
 alpha <- as.numeric(input$alpha)
 binsize <- as.numeric(input$binsize)
+gap_size <- as.numeric(input$gap_size)
+if (is.na(gap_size) || gap_size <= 0) {
+    gap_size <- 2000000  # fallback to legacy behavior
+}
 out.file <- as.character(input$outfile)
 
 if (gender == "M"){
@@ -92,7 +96,7 @@ for (row.i in 1:nrow(CNA.object)){
   start.pos <- which(diff.na == 1) + start.i - 1 # all consecutive NAs (start.pos)
   end.pos <- which(diff.na == -1) + start.i - 1 # all consecutive NAs (end.pos)
   
-  selection <- end.pos - start.pos > as.integer((binsize / 2000000) ** -1) # 100 kb -> 20 NA stretch: split
+  selection <- end.pos - start.pos > as.integer(gap_size / binsize) # split at NaN gaps > gap_size bp
   
   start.pos <- start.pos[selection]
   end.pos <- end.pos[selection]

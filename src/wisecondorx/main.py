@@ -639,6 +639,24 @@ def main():
         help="Minimum number of bins for a nested sub-segment to be reported.",
     )
     parser_test.add_argument(
+        "--resegment-alpha",
+        type=float,
+        default=None,
+        dest="resegment_alpha",
+        help="CBS alpha for the resegment pass. Defaults to --alpha value. "
+        "Use a higher value (e.g. 0.01) for more sensitive detection of "
+        "small embedded events within large segments.",
+    )
+    parser_test.add_argument(
+        "--gap-size",
+        type=int,
+        default=2000000,
+        dest="gap_size",
+        help="Split CBS segments at NaN gaps larger than this size (in bp). "
+        "Lower values (e.g. 100000) help detect CNVs adjacent to poorly-covered regions "
+        "but increase segment count.",
+    )
+    parser_test.add_argument(
         "--seed", type=int, default=None, help="Seed for segmentation algorithm"
     )
     parser_test.add_argument(
