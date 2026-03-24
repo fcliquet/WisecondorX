@@ -25,6 +25,7 @@ from wisecondorx.predict_tools import (
     apply_blacklist,
     predict_gender,
     resegment_aberrations,
+    resegment_all_segments,
 )
 
 
@@ -139,6 +140,67 @@ def tool_newref(args):
     logging.info("Finished creating reference")
 
 
+def _remap_autosomal_to_gender_mask(
+    mask_auto, mask_gender_auto,
+    results_r, results_z, results_w, ref_sizes,
+):
+    """Remap autosomal normalization results from autosomal mask space to the
+    gender-specific mask's autosomal portion.
+
+    The autosomal reference uses ``mask`` (built from all samples), while the
+    gender-specific reference uses ``mask.M`` or ``mask.F`` (built from only
+    male or female samples).  Their autosomal portions can differ because
+    the CV filter is applied independently to each cohort, so slightly
+    different bins pass.  When the autosomal results are concatenated with the
+    gonosomal results and later inflated using the gender-specific mask,
+    any mismatch causes a positional shift that assigns wrong values to bins
+    downstream of the first discrepancy.
+
+    This function builds a genome-position lookup so that each bin in the
+    gender autosomal mask receives the correct value from the autosomal
+    results array.  Bins present in the gender mask but absent from the
+    autosomal mask are set to zero (no normalization data available).
+    """
+    auto_positions = np.where(mask_auto)[0]
+    gender_auto_positions = np.where(mask_gender_auto)[0]
+
+    # Map genome position → index in the autosomal results array
+    genome_to_idx = np.full(len(mask_auto), -1, dtype=np.int64)
+    genome_to_idx[auto_positions] = np.arange(len(auto_positions))
+
+    mapped = genome_to_idx[gender_auto_positions]
+    valid = mapped >= 0
+
+    remapped = []
+    for arr in (results_r, results_z, results_w, ref_sizes):
+        out = np.zeros(len(gender_auto_positions), dtype=arr.dtype)
+        out[valid] = arr[mapped[valid]]
+        remapped.append(out)
+
+    return tuple(remapped)
+
+
+def _remap_null_ratios(mask_auto, mask_gender_auto, null_ratios_aut):
+    """Remap autosomal null ratios from autosomal mask space to the
+    gender-specific mask's autosomal portion (same logic as above but
+    for the object array of per-bin null-ratio lists)."""
+    auto_positions = np.where(mask_auto)[0]
+    gender_auto_positions = np.where(mask_gender_auto)[0]
+
+    genome_to_idx = np.full(len(mask_auto), -1, dtype=np.int64)
+    genome_to_idx[auto_positions] = np.arange(len(auto_positions))
+
+    mapped = genome_to_idx[gender_auto_positions]
+
+    remapped = np.empty(len(gender_auto_positions), dtype=object)
+    for i, idx in enumerate(mapped):
+        if idx >= 0:
+            remapped[i] = null_ratios_aut[idx]
+        else:
+            remapped[i] = np.array([])
+    return remapped
+
+
 def tool_test(args):
     logging.info("Starting CNA prediction")
 
@@ -215,10 +277,42 @@ def tool_test(args):
 
     logging.info("Normalizing gonosomes ...")
 
+    # Remap autosomal results from autosomal mask space to the gender-specific
+    # mask's autosomal portion. The autosomal reference (mask, indexes, distances)
+    # is built from ALL samples, while the gender-specific reference (mask.M/F) is
+    # built from only male/female samples. Their autosomal masks can differ slightly
+    # (different bins pass the CV filter), causing a misalignment when results are
+    # concatenated and later inflated using the gender-specific mask.
+    mask_auto = ref_file["mask"]
+    mask_gender = ref_file["mask.{}".format(ref_gender)]
+    auto_len = len(mask_auto)
+    mask_gender_auto = mask_gender[:auto_len]
+
+    n_diff = int(np.sum(mask_auto != mask_gender_auto))
+    if n_diff > 0:
+        logging.info(
+            "Remapping %d autosomal bins between autosomal and %s mask",
+            n_diff, ref_gender,
+        )
+        results_r, results_z, results_w, ref_sizes = _remap_autosomal_to_gender_mask(
+            mask_auto, mask_gender_auto,
+            results_r, results_z, results_w, ref_sizes,
+        )
+
+    # Extract gonosomal null ratios using the gender mask's autosomal bin count
+    # (not len(null_ratios), which corresponds to the autosomal-only mask).
     null_ratios_aut_per_bin = ref_file["null_ratios"]
-    null_ratios_gon_per_bin = ref_file["null_ratios.{}".format(ref_gender)][
-        len(null_ratios_aut_per_bin) :
-    ]
+    gender_auto_count = int(np.sum(mask_gender_auto))
+    null_ratios_gender = ref_file["null_ratios.{}".format(ref_gender)]
+    null_ratios_gon_per_bin = null_ratios_gender[gender_auto_count:]
+
+    # Also remap autosomal null ratios if masks differ
+    if n_diff > 0:
+        null_ratios_aut_remapped = _remap_null_ratios(
+            mask_auto, mask_gender_auto, null_ratios_aut_per_bin,
+        )
+    else:
+        null_ratios_aut_remapped = null_ratios_aut_per_bin
 
     results_r_2, results_z_2, results_w_2, ref_sizes_2, _, _ = normalize(
         args, sample, ref_file, ref_gender
@@ -256,7 +350,7 @@ def tool_test(args):
 
     ref_sizes = np.append(ref_sizes, ref_sizes_2)
 
-    null_ratios = np.array([x.tolist() for x in null_ratios_aut_per_bin] + [x.tolist() for x in null_ratios_gon_per_bin], dtype=object)
+    null_ratios = np.array([x.tolist() for x in null_ratios_aut_remapped] + [x.tolist() for x in null_ratios_gon_per_bin], dtype=object)
 
     results = {
         "results_r": results_r,
@@ -280,7 +374,16 @@ def tool_test(args):
 
     results["results_c"] = exec_cbs(rem_input, results)
 
-    if getattr(args, "resegment", False):
+    if getattr(args, "resegment_all", False):
+        logging.info("Re-segmenting ALL segments for embedded events ...")
+        nested = resegment_all_segments(
+            rem_input, results, min_bins=args.resegment_min_bins
+        )
+        if nested:
+            logging.info("Found {} nested event(s)".format(len(nested)))
+            results["results_c"].extend(nested)
+            results["results_c"].sort(key=lambda s: (s[0], s[1]))
+    elif getattr(args, "resegment", False):
         logging.info("Re-segmenting aberrant regions for nested events ...")
         nested = resegment_aberrations(
             rem_input, results, min_bins=args.resegment_min_bins
@@ -520,11 +623,38 @@ def main():
         "deletion inside a mosaic arm-level gain).",
     )
     parser_test.add_argument(
+        "--resegment-all",
+        action="store_true",
+        dest="resegment_all",
+        help="Re-run CBS on ALL segments (not just aberrant ones) to detect embedded "
+        "events. This catches CNVs inside large neutral segments that the initial "
+        "CBS pass missed (e.g. a small duplication buried in a multi-Mb segment). "
+        "Implies --resegment.",
+    )
+    parser_test.add_argument(
         "--resegment-min-bins",
         type=int,
         default=3,
         dest="resegment_min_bins",
         help="Minimum number of bins for a nested sub-segment to be reported.",
+    )
+    parser_test.add_argument(
+        "--resegment-alpha",
+        type=float,
+        default=None,
+        dest="resegment_alpha",
+        help="CBS alpha for the resegment pass. Defaults to --alpha value. "
+        "Use a higher value (e.g. 0.01) for more sensitive detection of "
+        "small embedded events within large segments.",
+    )
+    parser_test.add_argument(
+        "--gap-size",
+        type=int,
+        default=2000000,
+        dest="gap_size",
+        help="Split CBS segments at NaN gaps larger than this size (in bp). "
+        "Lower values (e.g. 100000) help detect CNVs adjacent to poorly-covered regions "
+        "but increase segment count.",
     )
     parser_test.add_argument(
         "--seed", type=int, default=None, help="Seed for segmentation algorithm"

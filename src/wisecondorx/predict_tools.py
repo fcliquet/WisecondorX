@@ -247,12 +247,14 @@ Calculates segmental zz-scores.
 def exec_cbs(rem_input, results):
     json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_CBS_tmp")
 
+    gap_size = getattr(rem_input["args"], "gap_size", 2000000)
     json_dict = {
         "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
         "ref_gender": str(rem_input["ref_gender"]),
         "alpha": str(rem_input["args"].alpha),
         "binsize": str(rem_input["binsize"]),
         "seed": str(rem_input["args"].seed),
+        "gap_size": str(gap_size),
         "results_r": results["results_r"],
         "results_w": results["results_w"],
         "infile": str("{}_01.json".format(json_cbs_dir)),
@@ -303,7 +305,7 @@ def _get_aberrant_segments(rem_input, results):
     return aberrant
 
 
-def _run_cbs_on_segment(rem_input, residuals, weights):
+def _run_cbs_on_segment(rem_input, residuals, weights, alpha_override=None):
     json_cbs_dir = os.path.abspath(rem_input["args"].outid + "_reseg_tmp")
     # CBS.R expects results_r to have 23 (female) or 24 (male) chromosome lists.
     # We put our segment data in "chr 1" and pad the rest with single-zero lists.
@@ -312,12 +314,15 @@ def _run_cbs_on_segment(rem_input, residuals, weights):
     n_chrs = 23  # use "F" gender for simplicity
     padded_r = [list(residuals)] + [[0] for _ in range(n_chrs - 1)]
     padded_w = [[float(w) for w in weights]] + [[0] for _ in range(n_chrs - 1)]
+    gap_size = getattr(rem_input["args"], "gap_size", 2000000)
+    alpha = alpha_override if alpha_override is not None else rem_input["args"].alpha
     json_dict = {
         "R_script": str("{}/include/CBS.R".format(rem_input["wd"])),
         "ref_gender": "F",
-        "alpha": str(rem_input["args"].alpha),
+        "alpha": str(alpha),
         "binsize": str(rem_input["binsize"]),
         "seed": str(rem_input["args"].seed),
+        "gap_size": str(gap_size),
         "results_r": padded_r,
         "results_w": padded_w,
         "infile": str("{}_01.json".format(json_cbs_dir)),
@@ -336,6 +341,7 @@ def _run_cbs_on_segment(rem_input, residuals, weights):
 def resegment_aberrations(rem_input, results, min_bins=3):
     aberrant_segments = _get_aberrant_segments(rem_input, results)
     nested = []
+    reseg_alpha = getattr(rem_input["args"], "resegment_alpha", None)
 
     for seg in aberrant_segments:
         chrom, start, end, seg_z, seg_ratio = seg
@@ -353,7 +359,7 @@ def resegment_aberrations(rem_input, results, min_bins=3):
 
         residuals = [r - seg_ratio if r != 0 else 0 for r in bin_ratios]
 
-        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights)
+        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights, alpha_override=reseg_alpha)
 
         for sub_s, sub_e, sub_ratio in sub_segments:
             sub_len = sub_e - sub_s + 1
@@ -382,5 +388,201 @@ def resegment_aberrations(rem_input, results, min_bins=3):
                 sub_z = "nan"
 
             nested.append([chrom, abs_start, abs_end, sub_z, abs_ratio, "nested"])
+
+    return nested
+
+
+def resegment_all_segments(rem_input, results, min_bins=3):
+    """Re-run CBS on ALL segments to detect embedded events.
+
+    Unlike resegment_aberrations() which only processes aberrant segments,
+    this function processes every segment using a two-pass approach:
+
+    1. CBS pass: Re-runs CBS on segment residuals (same as resegment_aberrations)
+       to find moderate-size embedded events.
+    2. Scan pass: For large neutral segments where CBS has limited power, uses a
+       z-score-based scanning approach to detect small focal CNVs (e.g. the
+       KANSL1 duplication hidden in an 8 Mb neutral segment).
+
+    Sub-segments from neutral parents are filtered using the same aberration
+    thresholds (z-score or beta) as primary segments.
+    """
+    all_segments = results["results_c"]
+    nested = []
+    reseg_alpha = getattr(rem_input["args"], "resegment_alpha", None)
+
+    # Determine which segments are aberrant for adaptive filtering
+    aberrant_set = set()
+    for seg in _get_aberrant_segments(rem_input, results):
+        aberrant_set.add((seg[0], seg[1], seg[2]))
+
+    for seg in all_segments:
+        chrom, start, end, seg_z, seg_ratio = seg[:5]
+        seg_len = end - start + 1
+        is_aberrant = (chrom, start, end) in aberrant_set
+
+        if seg_len < min_bins * 2:
+            continue
+
+        bin_ratios = results["results_r"][chrom][start : end + 1]
+        bin_weights = results["results_w"][chrom][start : end + 1]
+
+        valid_count = sum(1 for r in bin_ratios if r != 0)
+        if valid_count < min_bins * 2:
+            continue
+
+        residuals = [r - seg_ratio if r != 0 else 0 for r in bin_ratios]
+
+        # Pass 1: CBS on residuals (good for moderate-size events)
+        sub_segments = _run_cbs_on_segment(rem_input, residuals, bin_weights, alpha_override=reseg_alpha)
+
+        for sub_s, sub_e, sub_ratio in sub_segments:
+            sub_len = sub_e - sub_s + 1
+            if sub_len < min_bins:
+                continue
+            if sub_len > seg_len * 0.9:
+                continue
+
+            abs_ratio = seg_ratio + sub_ratio
+
+            if is_aberrant:
+                if rem_input["args"].beta is not None:
+                    if abs(sub_ratio) < rem_input["args"].beta / 4:
+                        continue
+                else:
+                    if abs(sub_ratio) < 0.1:
+                        continue
+            else:
+                if not _passes_aberration_filter(rem_input, chrom, abs_ratio):
+                    continue
+
+            abs_start = start + sub_s
+            abs_end = start + sub_e
+
+            bin_z = results["results_z"][chrom][abs_start : abs_end + 1]
+            valid_z = [z for z in bin_z if z != 0]
+            if valid_z:
+                sub_z = float(np.mean(valid_z))
+            else:
+                sub_z = "nan"
+
+            if not is_aberrant and rem_input["args"].beta is None:
+                if isinstance(sub_z, str) or abs(sub_z) < rem_input["args"].zscore:
+                    continue
+
+            nested.append([chrom, abs_start, abs_end, sub_z, abs_ratio, "nested"])
+
+        # Pass 2: Z-score scanning for small focal events in large neutral segments
+        # CBS struggles to detect <50 aberrant bins in >1000-bin segments;
+        # scanning for runs of extreme z-scores catches these.
+        if not is_aberrant and seg_len >= min_bins * 10:
+            scan_results = _scan_for_focal_events(
+                results, chrom, start, end, seg_ratio, min_bins, rem_input
+            )
+            nested.extend(scan_results)
+
+    return nested
+
+
+def _passes_aberration_filter(rem_input, chrom, abs_ratio):
+    """Check if a ratio passes the aberration threshold for a given chromosome."""
+    ploidy = 2
+    chr_name = str(chrom + 1)
+    if (chr_name == "23" or chr_name == "24") and rem_input["ref_gender"] == "M":
+        ploidy = 1
+    if rem_input["args"].beta is not None:
+        loss_c, gain_c = _get_aberration_cutoff(rem_input["args"].beta, ploidy)
+        return abs_ratio > gain_c or abs_ratio < loss_c
+    return True  # z-score mode: ratio filter not applicable
+
+
+def _scan_for_focal_events(results, chrom, start, end, seg_ratio, min_bins, rem_input):
+    """Scan a segment for focal events using z-score runs.
+
+    Identifies contiguous runs of bins where z-scores consistently exceed
+    a per-bin threshold, then evaluates the cluster as a potential CNV.
+    Only the core cluster (seed bins bridging small NaN gaps) is used —
+    no aggressive expansion that would dilute the signal.
+    """
+    nested = []
+    bin_z = results["results_z"][chrom][start : end + 1]
+    bin_r = results["results_r"][chrom][start : end + 1]
+    bin_w = results["results_w"][chrom][start : end + 1]
+    seg_len = end - start + 1
+
+    # Scan minimum bins: at least 5 to reduce FP from small noise clusters
+    scan_min_bins = max(min_bins, 5)
+
+    # Per-bin z-score threshold for seed selection: use the segment threshold
+    # (same stringency as primary calling) to limit seeds to strong signals
+    bin_z_thresh = rem_input["args"].zscore
+
+    # Find seed bins: valid bins with |z-score| > bin_z_thresh
+    seeds = []
+    for i in range(seg_len):
+        if bin_r[i] != 0 and abs(bin_z[i]) > bin_z_thresh:
+            seeds.append(i)
+
+    if not seeds:
+        return nested
+
+    # Cluster adjacent seeds, allowing gaps of up to 3 bins (NaN/dropout)
+    clusters = []
+    current_cluster = [seeds[0]]
+    for i in range(1, len(seeds)):
+        if seeds[i] - seeds[i - 1] <= 3:
+            current_cluster.append(seeds[i])
+        else:
+            clusters.append(current_cluster)
+            current_cluster = [seeds[i]]
+    clusters.append(current_cluster)
+
+    for cluster in clusters:
+        if len(cluster) < scan_min_bins:
+            continue
+
+        # Use the span of the cluster (first seed to last seed)
+        left = cluster[0]
+        right = cluster[-1]
+
+        sub_len = right - left + 1
+        if sub_len < scan_min_bins:
+            continue
+        if sub_len > seg_len * 0.9:
+            continue
+
+        # Compute sub-segment statistics from valid bins in the span
+        sub_z_vals = [bin_z[i] for i in range(left, right + 1) if bin_r[i] != 0]
+        sub_r_vals = [bin_r[i] for i in range(left, right + 1) if bin_r[i] != 0]
+        sub_w_vals = [bin_w[i] for i in range(left, right + 1) if bin_r[i] != 0]
+
+        if len(sub_z_vals) < scan_min_bins:
+            continue
+
+        # Require consistent sign (all seeds should have same direction)
+        signs = [1 if z > 0 else -1 for z in sub_z_vals]
+        dominant_sign = 1 if sum(signs) > 0 else -1
+        concordant = sum(1 for s in signs if s == dominant_sign)
+        if concordant < len(signs) * 0.7:  # at least 70% same direction
+            continue
+
+        mean_z = float(np.mean(sub_z_vals))
+        if sub_w_vals and sum(sub_w_vals) > 0:
+            mean_r = float(np.average(sub_r_vals, weights=sub_w_vals))
+        else:
+            mean_r = float(np.mean(sub_r_vals))
+
+        abs_start = start + left
+        abs_end = start + right
+
+        # Apply same aberration thresholds as primary segments
+        if rem_input["args"].beta is not None:
+            if not _passes_aberration_filter(rem_input, chrom, mean_r):
+                continue
+        else:
+            if abs(mean_z) < rem_input["args"].zscore:
+                continue
+
+        nested.append([chrom, abs_start, abs_end, mean_z, mean_r, "nested"])
 
     return nested

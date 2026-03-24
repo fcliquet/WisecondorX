@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wisecondorx"
-version = "2.0.0"
+version = "2.1.0"
 description = "WisecondorX -- an evolved WISECONDOR"
 readme = "README.md"
 license = "LicenseRef-by-nc-sa"
