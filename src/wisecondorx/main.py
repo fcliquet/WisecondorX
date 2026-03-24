@@ -25,6 +25,7 @@ from wisecondorx.predict_tools import (
     apply_blacklist,
     predict_gender,
     resegment_aberrations,
+    resegment_all_segments,
 )
 
 
@@ -373,7 +374,16 @@ def tool_test(args):
 
     results["results_c"] = exec_cbs(rem_input, results)
 
-    if getattr(args, "resegment", False):
+    if getattr(args, "resegment_all", False):
+        logging.info("Re-segmenting ALL segments for embedded events ...")
+        nested = resegment_all_segments(
+            rem_input, results, min_bins=args.resegment_min_bins
+        )
+        if nested:
+            logging.info("Found {} nested event(s)".format(len(nested)))
+            results["results_c"].extend(nested)
+            results["results_c"].sort(key=lambda s: (s[0], s[1]))
+    elif getattr(args, "resegment", False):
         logging.info("Re-segmenting aberrant regions for nested events ...")
         nested = resegment_aberrations(
             rem_input, results, min_bins=args.resegment_min_bins
@@ -611,6 +621,15 @@ def main():
         action="store_true",
         help="Re-run CBS on aberrant segments to detect nested events (e.g. focal "
         "deletion inside a mosaic arm-level gain).",
+    )
+    parser_test.add_argument(
+        "--resegment-all",
+        action="store_true",
+        dest="resegment_all",
+        help="Re-run CBS on ALL segments (not just aberrant ones) to detect embedded "
+        "events. This catches CNVs inside large neutral segments that the initial "
+        "CBS pass missed (e.g. a small duplication buried in a multi-Mb segment). "
+        "Implies --resegment.",
     )
     parser_test.add_argument(
         "--resegment-min-bins",
