@@ -1,20 +1,30 @@
-FROM mambaorg/micromamba:2.0-noble
+FROM continuumio/miniconda3:latest
 
 LABEL maintainer="fcliquet"
 LABEL org.opencontainers.image.source="https://github.com/fcliquet/WisecondorX"
 
-COPY --chown=$MAMBA_USER:$MAMBA_USER conda.yml /tmp/conda.yml
-RUN micromamba install -y -n base -f /tmp/conda.yml \
-    && micromamba clean -a -y
+# Install R + Bioconductor packages + faiss via conda
+RUN conda install -y -c conda-forge -c bioconda \
+        python=3.12 \
+        r-base \
+        r-jsonlite \
+        bioconductor-dnacopy \
+        pysam \
+        faiss-cpu \
+    && conda clean -a -y
 
-USER root
-ENV PATH="$MAMBA_ROOT_PREFIX/bin:$PATH"
-
+# Install WisecondorX via pip
 COPY . /app
 WORKDIR /app
 RUN pip install --no-cache-dir .
 
-USER $MAMBA_USER
-WORKDIR /home/$MAMBA_USER
+# Smoke test: verify key tools are available
+RUN wisecondorx --help \
+    && python -c "import wisecondorx; print('WisecondorX installed')" \
+    && python -c "import faiss; print(f'faiss {faiss.__version__}')" \
+    && python -c "import pysam; print(f'pysam {pysam.__version__}')" \
+    && Rscript -e "library(DNAcopy); cat('DNAcopy OK\n')" \
+    && Rscript -e "library(jsonlite); cat('jsonlite OK\n')"
 
+WORKDIR /data
 ENTRYPOINT ["wisecondorx"]
